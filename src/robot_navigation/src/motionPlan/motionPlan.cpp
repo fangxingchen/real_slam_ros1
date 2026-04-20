@@ -808,6 +808,11 @@ void motionPlan::pathPlanning(Eigen::Vector2d startMapPoint, Eigen::Vector2d goa
   // 使用普通astar进行规划
   if(control_method == 1)
   {
+    // 【修改点】：不再仅仅依赖标志位，而是实时获取当前最新的定位数据
+    // 确保 startMapPoint 就是此时此刻最新的 localData 位置
+    startMapPoint[0] = localData.xPosition;
+    startMapPoint[1] = localData.yPosition;
+    
     // 开始进行规划
     if (mapInitFlag == true && getStartFlag == true )
     {

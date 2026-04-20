@@ -1,4 +1,4 @@
-image: /home/ubuntu/RealSlamRos1/src/tri_steer_gazebo/map/carto_mape.pgm
+image: /home/ubuntu/RealSlamRos1/src/robot_costmap/maps/carto_mapf.pgm
 resolution: 0.1
 origin: [-8.2412, -14.876, 0.0]
 negate: 0

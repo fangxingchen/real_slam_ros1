@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>omnidirectional_dwa_aligner</name>
+  <version>0.0.2</version>
+  <description>全向底盘 DWA 局部规划功能包：补齐缺失源码、修正仿真里程计订阅与参数依赖。</description>
+
+  <maintainer email="user@example.com">Ruchao Wang</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>tf</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>tf2_sensor_msgs</depend>
+  <depend>pcl_conversions</depend>
+  <depend>pcl_ros</depend>
+  <depend>eigen_conversions</depend>
+  <depend>robot_communication</depend>
+  <depend>robot_costmap</depend>
+
+  <export/>
+</package>

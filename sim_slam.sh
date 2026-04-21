@@ -22,6 +22,10 @@ gnome-terminal -t "carto_relocalize" -- bash -lc "cd /home/ubuntu/Cartographer/C
 until rostopic list 2>/dev/null | grep -q "^/map$"; do
   sleep 0.5
 done
+
+# 3) 启动 teleop + robot
+gnome-terminal -t "teleop_start" -- bash -lc "source ~/RealSlamRos1/devel/setup.bash; roslaunch tri_steer_keyboard keyboard_tri_steer.launch"
+
 # 5）启动地图节点
 gnome-terminal -t "map start" -- bash -lc "source ~/RealSlamRos1/devel/setup.bash; roslaunch robot_costmap map_deal.launch;exec bash"
 # 6) 运动规划节点
@@ -29,7 +33,7 @@ gnome-terminal -t "motion Plan start" -- bash -lc "source ~/RealSlamRos1/devel/s
 # 7）局部规划pid算法
 gnome-terminal -t "PID_control" -- bash -c "source ~/RealSlamRos1/devel/setup.bash; roslaunch robot_pid_local_planner Omnidirectional_PID.launch; exec bash"
 # 解析carto算法发布的tf变换到机器人
-gnome-terminal -t "carto_odom_start" -- bash -lc "source ~/RealSlamRos1/devel/setup.bash; roslaunch carto_tf_to_odom carto_tf_to_odom.launch; exec bash"
+gnome-terminal -t "carto_odom_start" -- bash -lc "source ~/RealSlamRos1/devel/setup.bash; roslaunch carto_tf_to_odom carto_tf_to_odom_sim.launch; exec bash"
 # 9) 启动并发布机器人真值里程计消息
 gnome-terminal -t "truth Odom start" -- bash -lc "source ~/RealSlamRos1/devel/setup.bash; roslaunch robot_locatization truth_odometry.launch;exec bash"
 # 10）订阅控制消息

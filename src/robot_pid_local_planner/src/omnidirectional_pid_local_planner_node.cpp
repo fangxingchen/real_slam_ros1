@@ -104,6 +104,8 @@ public:
     nh_.param("ENABLE_FINAL_YAW", enable_final_yaw_, true);  // 是否启用终点朝向约束
     nh_.param("YAW_TOL", yaw_tol_, 0.1);  // 朝向容差（弧度），默认 0.1 ≈ 5.7°
     nh_.param("YAW_ADJUST_TIMEOUT", yaw_adjust_timeout_, 5.0);  // 最长旋转时间
+    nh_.param("CONST_WZ", const_wz_, 0.3);  // 终点朝向调整使用的恒定转速（rad/s）
+    nh_.param("YAW_OFFSET", yaw_offset_, 0.0); // 【新增】朝向修正补偿（弧度）
 
     path_sub_ = nh_.subscribe("/opt_path", 1, &OmnidirectionalPIDLocalPlanner::pathCb, this);
     goal_sub_ = nh_.subscribe("/move_base_simple/goal", 1, &OmnidirectionalPIDLocalPlanner::goalCb, this);
@@ -126,8 +128,8 @@ public:
     timer_ = nh_.createTimer(ros::Duration(1.0/std::max(1.0, pub_hz_)),
                              &OmnidirectionalPIDLocalPlanner::onTimer, this);
 
-    ROS_INFO("[robot_pid_local_planner] started. IS_SIM=%s, lookahead=%.2f, pub_hz=%.1f",
-             is_sim_ ? "true":"false", lookahead_dist_, pub_hz_);
+    ROS_INFO("[robot_pid_local_planner] started. IS_SIM=%s, lookahead=%.2f, pub_hz=%.1f, yaw_offset=%.2f",
+             is_sim_ ? "true":"false", lookahead_dist_, pub_hz_, yaw_offset_);
   }
 
 private:
@@ -164,7 +166,7 @@ private:
 
     if (has_path_ && new_path) {
       reached_latched_ = false;
-      path_id_counter_++;  // 【新增】标记新路径
+      path_id_counter_++;  // 标记新路径
       pid_x_.reset(); pid_y_.reset(); pid_yaw_.reset();
       ROS_INFO("[robot_pid_local_planner] new path detected -> exit IDLE");
     }
@@ -175,7 +177,7 @@ private:
     goal_ = *msg;
     has_goal_ = true;
     reached_latched_ = false;
-    yaw_adjust_start_time_ = ros::Time(0);  // 【新增】重置朝向调整超时计时器
+    yaw_adjust_start_time_ = ros::Time(0);  // 重置朝向调整超时计时器
     pid_x_.reset(); pid_y_.reset(); pid_yaw_.reset();
   }
 
@@ -282,7 +284,6 @@ private:
     return true;
   }
 
-  // 【新增】检查朝向是否到达（误差在指定范围内）
   bool isYawReached(double yaw_target) const
   {
     const double e_yaw = wrap_to_pi(yaw_target - yaw_);
@@ -295,20 +296,21 @@ private:
     return reached;
   }
 
-  // 【新增】从路径末尾pose提取目标朝向
-// 【修改】优先从 RViz 拖拽的 goal 中获取目标朝向
+  // 【核心修改处】在提取目标朝向时，加上 YAML 传进来的 yaw_offset_
   double getPathEndYaw() const
   {
     // 1. 首选：直接从 RViz 下发的全局目标 (goal_) 中获取鼠标拖拽的朝向
     if (has_goal_)
     {
       const auto& q = goal_.pose.orientation;
-      // 检查四元数是否合法
       if (!(std::abs(q.x) < 1e-6 && std::abs(q.y) < 1e-6 && 
             std::abs(q.z) < 1e-6 && std::abs(q.w) < 1e-6)) 
       {
         double target_yaw = tf::getYaw(q);
-        ROS_DEBUG_THROTTLE(1.0, "[robot_pid_local_planner] Using Goal Yaw: %.3f rad", target_yaw);
+        target_yaw += yaw_offset_; // 【附加人为修正偏移量】
+        target_yaw = wrap_to_pi(target_yaw);
+        
+        ROS_DEBUG_THROTTLE(1.0, "[robot_pid_local_planner] Using Goal Yaw with offset: %.3f rad", target_yaw);
         return target_yaw;
       }
     }
@@ -320,11 +322,12 @@ private:
       if (!(std::abs(q.x) < 1e-6 && std::abs(q.y) < 1e-6 && 
             std::abs(q.z) < 1e-6 && std::abs(q.w) < 1e-6)) 
       {
-        return tf::getYaw(q);
+        double target_yaw = tf::getYaw(q);
+        target_yaw += yaw_offset_; // 【附加人为修正偏移量】
+        return wrap_to_pi(target_yaw);
       }
     }
 
-    // 3. 终极兜底：都没有有效朝向，则保持当前朝向
     ROS_WARN_THROTTLE(2.0, "[robot_pid_local_planner] No valid final yaw found. Keeping current yaw.");
     return yaw_; 
   }
@@ -343,12 +346,10 @@ private:
       return;
     }
 
-    // ========= 【核心修复】通过 TF 获取小车在路径坐标系下的真实位姿 =========
     if (!is_sim_ && has_path_) 
     {
       tf::StampedTransform transform;
       try {
-        // 查询 base_link 在路径所在坐标系（通常是 map）下的坐标
         tf_listener_.lookupTransform(path_.header.frame_id, "base_link", ros::Time(0), transform);
         x_ = transform.getOrigin().x();
         y_ = transform.getOrigin().y();
@@ -367,18 +368,13 @@ private:
       return;
     }
 
-    // 【修改】添加支持终点朝向约束的逻辑
     if (idle_latch_on_reached_ && isReachedGoal())
     {
-      // 位置已到达，检查是否启用终点朝向约束
       if (enable_final_yaw_ && has_path_ && !path_.poses.empty())
       {
         double target_yaw = getPathEndYaw();
-        
-        // 【重要】检查朝向误差
         const double e_yaw = wrap_to_pi(target_yaw - yaw_);
         
-        // 如果朝向误差很小，直接认为到达
         if (std::fabs(e_yaw) < yaw_tol_)
         {
           publishZero();
@@ -388,16 +384,14 @@ private:
           return;
         }
         
-        // 【新增】检查是否首次进入朝向调整，初始化超时时间
         if (yaw_adjust_start_time_.isZero())
         {
           yaw_adjust_start_time_ = ros::Time::now();
-          pid_yaw_.reset();  // 重置 PID，开始新的朝向调整
+          pid_yaw_.reset();
           ROS_INFO("[robot_pid_local_planner] Entering yaw adjustment phase. target_yaw=%.3f, current_yaw=%.3f",
                    target_yaw, yaw_);
         }
         
-        // 【重要】超时保护：防止无限旋转
         const double yaw_adjust_time = (ros::Time::now() - yaw_adjust_start_time_).toSec();
         if (yaw_adjust_time > yaw_adjust_timeout_)
         {
@@ -406,11 +400,10 @@ private:
           publishZero();
           reached_latched_ = true;
           pid_x_.reset(); pid_y_.reset(); pid_yaw_.reset();
-          yaw_adjust_start_time_ = ros::Time(0);  // 重置超时计时器
+          yaw_adjust_start_time_ = ros::Time(0);
           return;
         }
         
-        // 继续执行朝向控制
         const double dt = (last_cmd_time_.isZero()) ? (1.0/std::max(1.0, pub_hz_))
                                                     : (ros::Time::now() - last_cmd_time_).toSec();
         last_cmd_time_ = ros::Time::now();
@@ -423,7 +416,6 @@ private:
         cmd.linear.y = 0;
         cmd.angular.z = wz;
 
-        // 【第 1 处新增】NaN 防护层
         if (std::isnan(cmd.linear.x) || std::isnan(cmd.linear.y) || std::isnan(cmd.angular.z)) 
         {
           ROS_ERROR_THROTTLE(1.0, "[robot_pid_local_planner] NaN velocity detected in final yaw adjustment! Forcing to zero.");
@@ -439,16 +431,14 @@ private:
         return;
       }
 
-      // 位置和朝向都到达（或禁用了朝向约束），进入IDLE
       reached_latched_ = true;
       pid_x_.reset(); pid_y_.reset(); pid_yaw_.reset();
-      yaw_adjust_start_time_ = ros::Time(0);  // 重置超时计时器
+      yaw_adjust_start_time_ = ros::Time(0);
       publishZero();
       ROS_INFO_THROTTLE(1.0, "[robot_pid_local_planner] reached goal -> IDLE (latched).");
       return;
     }
     
-    // 【新增】新路径到达时重置朝向调整计时器
     if (has_path_ && path_id_counter_ != last_path_id_)
     {
       yaw_adjust_start_time_ = ros::Time(0);
@@ -490,7 +480,6 @@ private:
     cmd.linear.y = vy;
     cmd.angular.z = wz;
 
-    // 【第 2 处新增】NaN 防护层
     if (std::isnan(cmd.linear.x) || std::isnan(cmd.linear.y) || std::isnan(cmd.angular.z)) 
     {
       ROS_ERROR_THROTTLE(1.0, "[robot_pid_local_planner] NaN velocity detected in normal tracking! Forcing to zero.");
@@ -500,9 +489,7 @@ private:
     }
 
     cmd_pub_.publish(cmd);
-  
   }
-
 
 private:
   ros::NodeHandle nh_;
@@ -523,11 +510,9 @@ private:
   nav_msgs::Path path_;
   geometry_msgs::PoseStamped goal_;
 
-
   tf::TransformListener tf_listener_;
   double last_path_first_x_{0.0};
   double last_path_first_y_{0.0};
-
 
   bool is_sim_{true};
   bool has_path_{false};
@@ -542,7 +527,6 @@ private:
   double stop_w_tol_{0.05};
   double new_path_eps_{0.02};
   
-  // 【新增】追踪路径ID，用于检测新路径
   uint64_t path_id_counter_{0};
   uint64_t last_path_id_{0};
   
@@ -556,16 +540,16 @@ private:
   double cmd_timeout_{0.5};
   double pub_hz_{30.0};
   
-  // 【新增】终点朝向相关参数
-  double yaw_tol_{0.05};  // 朝向容差（弧度）
-  bool enable_final_yaw_{true};  // 是否启用终点朝向约束
+  double yaw_tol_{0.1};  
+  bool enable_final_yaw_{true};  
 
   double x_{0}, y_{0}, yaw_{0};
   double vx_fb_{0}, vy_fb_{0}, wz_fb_{0};
   
-  // 【新增】用于跟踪何时进入朝向调整阶段，防止无限旋转
   ros::Time yaw_adjust_start_time_;
-  double yaw_adjust_timeout_{5.0};  // 最多旋转 5 秒（可通过参数配置）
+  double yaw_adjust_timeout_{5.0};  
+  double const_wz_{0.3};  
+  double yaw_offset_{0.0}; // 【新增的类成员变量】
 
   PID pid_x_, pid_y_, pid_yaw_;
 };

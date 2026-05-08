@@ -120,6 +120,10 @@ gnome-terminal -t "control  start" -- bash -lc "source ~/RealSlamRos1/devel/setu
 
 ### 常用命令
 
+# git保存
+git add .
+git commit -m "fix: 修复PID实车不动问题，恢复TF定位与路径跟踪"
+git push
 # 查看tf树
 rosrun rqt_tf_tree rqt_tf_tree
 # 查看 tf位姿 变化

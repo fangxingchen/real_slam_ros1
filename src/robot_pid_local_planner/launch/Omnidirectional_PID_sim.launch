@@ -1,0 +1,13 @@
+<launch>
+  <!-- 【仿真模式】PID 局部规划器启动文件 -->
+  <rosparam file="$(find robot_pid_local_planner)/config/omnidirectional_pid_param.yaml" command="load"/>
+
+  <!-- 仿真模式：IS_SIM=true -->
+  <param name="IS_SIM" value="true" />
+
+  <node pkg="robot_pid_local_planner"
+        type="omnidirectional_pid_local_planner_node"
+        name="omnidirectional_pid_local_planner"
+        output="screen">
+  </node>
+</launch>

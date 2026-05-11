@@ -142,42 +142,44 @@ private:
     const size_t sz = path_.poses.size();
 
     if (sz != last_path_size_) {
-      if (std::abs((int)sz - (int)last_path_size_) >= 2) new_path = true;
+      if (std::abs((int)sz - (int)last_path_size_) >= 5) new_path = true; // 放宽长度变化要求
     }
 
     if (sz > 0) {
-      // 1. 检查末端点变化
+      // 1. 只检查末端点（终点）变化！
       const auto& last = path_.poses.back().pose.position;
       const double dlast = std::hypot(last.x - last_path_last_x_, last.y - last_path_last_y_);
-      if (dlast > new_path_eps_) new_path = true;
+      
+      // 【关键修复】：把终点变化的阈值放大到 0.1 米（10厘米）。
+      // 防止车身抖动导致目标点微小跳变，从而打破锁存状态。
+      if (dlast > 0.1) new_path = true;
 
-      // 2. 检查起始点变化（重定位后新路径起点必变）
-      const auto& first = path_.poses.front().pose.position;
-      const double dfirst = std::hypot(first.x - last_path_first_x_, first.y - last_path_first_y_);
-      if (dfirst > new_path_eps_) new_path = true;
+      // 【关键修复】：彻底删除对 dfirst（起点）的检查！
+      // 原地旋转时起点一定会跟着雷达漂移，不能以此作为新路径的判断标准。
 
       // 更新记录
       last_path_last_x_ = last.x;
       last_path_last_y_ = last.y;
-      last_path_first_x_ = first.x;
-      last_path_first_y_ = first.y;
     }
     last_path_size_ = sz;
 
     if (has_path_ && new_path) {
       reached_latched_ = false;
-      path_id_counter_++;  // 标记新路径
+      yaw_adjust_dir_ = 0;  // 【修复】新路径时重置转向方向
+      yaw_adjust_start_time_ = ros::Time(0);  // 【修复】新路径时重置计时器
+      path_id_counter_++;  
       pid_x_.reset(); pid_y_.reset(); pid_yaw_.reset();
-      ROS_INFO("[robot_pid_local_planner] new path detected -> exit IDLE");
+      ROS_INFO("[robot_pid_local_planner] True new path detected (goal changed) -> exit IDLE");
     }
   }
-
+  
   void goalCb(const geometry_msgs::PoseStampedConstPtr& msg)
   {
     goal_ = *msg;
     has_goal_ = true;
     reached_latched_ = false;
     yaw_adjust_start_time_ = ros::Time(0);  // 重置朝向调整超时计时器
+    yaw_adjust_dir_ = 0;  // 【修复】重置转向方向标志
     pid_x_.reset(); pid_y_.reset(); pid_yaw_.reset();
   }
 
@@ -270,6 +272,14 @@ private:
   bool isReachedGoal() const
   {
     if (!has_path_ || path_.poses.empty()) return false;
+
+    // 【终极修复】：免死金牌放在最前面！
+    // 只要已经进入了终点朝向调整阶段，无视任何位置漂移，直接锁定为“已到达”！
+    if (!yaw_adjust_start_time_.isZero()) {
+        return true; 
+    }
+
+    // 只有在没开始旋转的时候，才去判断距离
     const auto& last = path_.poses.back().pose.position;
     const double dist_goal = std::hypot(last.x - x_, last.y - y_);
     if (dist_goal > goal_tol_) return false;
@@ -283,7 +293,7 @@ private:
 
     return true;
   }
-
+  
   bool isYawReached(double yaw_target) const
   {
     const double e_yaw = wrap_to_pi(yaw_target - yaw_);
@@ -388,19 +398,21 @@ private:
         {
           yaw_adjust_start_time_ = ros::Time::now();
           pid_yaw_.reset();
-          ROS_INFO("[robot_pid_local_planner] Entering yaw adjustment phase. target_yaw=%.3f, current_yaw=%.3f",
-                   target_yaw, yaw_);
+          // 【核心新增】：在开始旋转的第一瞬间，锁死旋转方向！
+          yaw_adjust_dir_ = (e_yaw >= 0) ? 1 : -1;
+          ROS_INFO("[robot_pid_local_planner] Entering yaw adjust. target=%.3f, current=%.3f, e_yaw=%.3f, dir=%d",
+                   target_yaw, yaw_, e_yaw, yaw_adjust_dir_);
         }
         
         const double yaw_adjust_time = (ros::Time::now() - yaw_adjust_start_time_).toSec();
         if (yaw_adjust_time > yaw_adjust_timeout_)
         {
-          ROS_WARN("[robot_pid_local_planner] YAW adjustment timeout (%.1f s). Force stop. e_yaw=%.3f",
-                   yaw_adjust_time, e_yaw);
+          ROS_WARN("[robot_pid_local_planner] YAW adjustment timeout (%.1f s). Force stop.", yaw_adjust_time);
           publishZero();
           reached_latched_ = true;
           pid_x_.reset(); pid_y_.reset(); pid_yaw_.reset();
           yaw_adjust_start_time_ = ros::Time(0);
+          yaw_adjust_dir_ = 0;  // 【修复】超时时也重置方向
           return;
         }
         
@@ -408,12 +420,77 @@ private:
                                                     : (ros::Time::now() - last_cmd_time_).toSec();
         last_cmd_time_ = ros::Time::now();
         
-        double wz = pid_yaw_.step(e_yaw, dt);
-        wz = clamp(wz, -max_wz_, max_wz_);
+        // 【关键修复】用恒定速度转动，而不是PID
+        double wz = yaw_adjust_dir_ * const_wz_;
+
+        // 【严格判定】：在目标前50%容差时就准备停止，避免过冲导致摆动
+        const double early_stop_threshold = yaw_tol_ * 0.5;
+        if (std::abs(e_yaw) < early_stop_threshold) 
+        {
+            publishZero();
+            reached_latched_ = true;  
+            pid_x_.reset(); pid_y_.reset(); pid_yaw_.reset();
+            yaw_adjust_start_time_ = ros::Time(0);
+            yaw_adjust_dir_ = 0;  // 重置方向
+            
+            ROS_INFO("[robot_pid_local_planner] Yaw aligned (early stop). e_yaw=%.3f, latched!", e_yaw);
+            return;
+        }
+        // 【过冲保护】：如果误差符号反向了，说明已经越过目标，也要停止
+        if (e_yaw * yaw_adjust_dir_ < 0)
+        {
+            publishZero();
+            reached_latched_ = true;  
+            pid_x_.reset(); pid_y_.reset(); pid_yaw_.reset();
+            yaw_adjust_start_time_ = ros::Time(0);
+            yaw_adjust_dir_ = 0;  // 重置方向
+            
+            ROS_INFO("[robot_pid_local_planner] Yaw overshoot detected. e_yaw=%.3f, stop. latched!", e_yaw);
+            return;
+        }
+
+        // ==============================================================
+        // 【新增功能】：在最后旋转的阶段，如果发生了物理漂移，用 PID 把它拉回原位！
+        // ==============================================================
+        // 1. 获取真正的终点坐标
+        const double gx = path_.poses.back().pose.position.x;
+        const double gy = path_.poses.back().pose.position.y;
+        
+        // 2. 计算当前位置与终点的偏差
+        const double dx = gx - x_;
+        const double dy = gy - y_;
+        
+        // 3. 把全图偏差转换到当前正在转动的小车坐标系下
+        const double cy = std::cos(yaw_);
+        const double sy = std::sin(yaw_);
+        const double ex =  cy*dx + sy*dy;
+        const double ey = -sy*dx + cy*dy;
+        
+        // 4. 让 PID 继续工作，计算出平移的补偿速度
+        double vx = pid_x_.step(ex, dt);
+        double vy = pid_y_.step(ey, dt);
+
+        // ==========================================
+        // 【核心修复 1】：加入位置死区（Deadzone）
+        // 如果小车偏离终点小于 0.03 米（3厘米），忽略平移，把全部电机功率留给旋转！
+        if (std::hypot(ex, ey) < 0.03) {
+            vx = 0.0;
+            vy = 0.0;
+            // 清理积分，防止没动的时候误差偷偷累积
+            pid_x_.reset(); 
+            pid_y_.reset();
+        }
+        
+        // 5. 限制一下修正速度（比如最大 0.05/s），让最后阶段以“旋转为主，平移微调为辅”
+        double max_corr_v = 0.05;
+        vx = clamp(vx, -max_corr_v, max_corr_v);
+        vy = clamp(vy, -max_corr_v, max_corr_v);
+
+        // ==============================================================
 
         geometry_msgs::Twist cmd;
-        cmd.linear.x = 0;
-        cmd.linear.y = 0;
+        cmd.linear.x = vx;  // 【修改】：原本是 0，现在换成 PID 计算出的补偿速度
+        cmd.linear.y = vy;  // 【修改】：原本是 0，现在换成 PID 计算出的补偿速度
         cmd.angular.z = wz;
 
         if (std::isnan(cmd.linear.x) || std::isnan(cmd.linear.y) || std::isnan(cmd.angular.z)) 
@@ -426,8 +503,8 @@ private:
 
         cmd_pub_.publish(cmd);
 
-        ROS_DEBUG_THROTTLE(0.5, "[robot_pid_local_planner] Adjusting yaw: e=%.3f, wz=%.3f, time=%.2f/%.1f",
-                           e_yaw, wz, yaw_adjust_time, yaw_adjust_timeout_);
+        ROS_DEBUG_THROTTLE(0.5, "[robot_pid_local_planner] Adjusting yaw: e=%.3f, wz=%.3f (dir=%d*const_wz), time=%.2f/%.1f",
+                           e_yaw, wz, yaw_adjust_dir_, yaw_adjust_time, yaw_adjust_timeout_);
         return;
       }
 
@@ -550,6 +627,7 @@ private:
   double yaw_adjust_timeout_{5.0};  
   double const_wz_{0.3};  
   double yaw_offset_{0.0}; // 【新增的类成员变量】
+  int yaw_adjust_dir_{0};  // 【新增】锁死旋转方向，1 为向左(正)，-1 为向右(负)
 
   PID pid_x_, pid_y_, pid_yaw_;
 };

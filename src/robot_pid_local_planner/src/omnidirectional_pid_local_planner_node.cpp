@@ -473,7 +473,7 @@ private:
         // ==========================================
         // 【核心修复 1】：加入位置死区（Deadzone）
         // 如果小车偏离终点小于 0.03 米（3厘米），忽略平移，把全部电机功率留给旋转！
-        if (std::hypot(ex, ey) < 0.03) {
+        if (std::hypot(ex, ey) < 0.01) {
             vx = 0.0;
             vy = 0.0;
             // 清理积分，防止没动的时候误差偷偷累积
@@ -481,8 +481,8 @@ private:
             pid_y_.reset();
         }
         
-        // 5. 限制一下修正速度（比如最大 0.05/s），让最后阶段以“旋转为主，平移微调为辅”
-        double max_corr_v = 0.05;
+        // 5. 限制一下修正速度（比如最大 0.15/s），让最后阶段以“旋转为主，平移微调为辅”
+        double max_corr_v = 0.15;
         vx = clamp(vx, -max_corr_v, max_corr_v);
         vy = clamp(vy, -max_corr_v, max_corr_v);
 

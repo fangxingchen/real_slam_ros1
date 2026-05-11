@@ -46,8 +46,8 @@ PUBLISH_ZERO_WHEN_IDLE: true
 
 # 到达判定是否要求速度接近 0（更稳，避免刚进阈值又被惯性/噪声带出去）
 USE_SPEED_CHECK: true
-STOP_V_TOL: 0.03   # m/s
-STOP_W_TOL: 0.05   # rad/s
+STOP_V_TOL: 0.1  # m/s
+STOP_W_TOL: 0.15  # rad/s
 
 # 判断“新路径”的末点变化阈值（用于解除 IDLE）
 NEW_PATH_EPS: 0.02
@@ -57,10 +57,10 @@ ENABLE_FINAL_YAW: true
 
 # 朝向容差（弧度）：小车朝向误差在此范围内认为已满足
 # 0.05 rad ≈ 2.9 度；0.1 rad ≈ 5.7 度；0.15 rad ≈ 8.6 度
-YAW_TOL: 0.03
+YAW_TOL: 0.02
 
 # 最大朝向调整时间（秒）：防止无限旋转
-YAW_ADJUST_TIMEOUT: 10.0
+YAW_ADJUST_TIMEOUT: 30
 
 # 终点朝向修正补偿（弧度），用于弥补 RViz 箭头与实车物理正前方的固定偏差
 # 如果车总是差 90 度，填 1.57 或者 -1.57；差 180 度，填 3.14
